@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-B站UP主动态监控脚本
+B站UP主动态监控脚本 - 网页抓取版本
 监控指定UP主的文字帖子，过滤纯图片帖子，通过微信推送
 """
 
@@ -11,119 +11,193 @@ import time
 import hashlib
 from datetime import datetime
 import sys
+from bs4 import BeautifulSoup
+import re
 
-# B站API配置 - 使用动态列表API
-BILIBILI_API = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
-# 备用API
-BILIBILI_API_BACKUP = "https://api.bilibili.com/x/space/wbi/feed/video"
+# B站动态页面URL
+DYNAMIC_URL = "https://space.bilibili.com/{uid}/dynamic"
 
-# 请求头，模拟浏览器
+# 请求头，模拟真实浏览器
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://space.bilibili.com/',
-    'Accept': 'application/json, text/plain, */*',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Origin': 'https://space.bilibili.com',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-site',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
 }
 
 
 def get_up_dynamics(uid):
     """
-    获取UP主的动态列表
+    通过网页抓取获取UP主的动态列表
     :param uid: UP主的用户ID
     :return: 动态列表
     """
-    # 使用session保持会话
     session = requests.Session()
+    session.headers.update(HEADERS)
 
-    # 完整的浏览器请求头
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Origin': 'https://space.bilibili.com',
-        'Referer': f'https://space.bilibili.com/{uid}',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-    }
-    session.headers.update(headers)
-
-    # 先访问主页获取必要的cookie
-    try:
-        session.get(f'https://space.bilibili.com/{uid}', timeout=10)
-        time.sleep(1)  # 等待cookie设置
-    except:
-        pass
-
-    params = {
-        'host_mid': uid,
-        'offset': '',
-        'timezone_offset': '-480',
-        'platform': 'web',
-        'features': 'itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote',
-    }
+    dynamics = []
 
     try:
-        response = session.get(BILIBILI_API, params=params, timeout=10)
+        # 访问动态页面
+        url = DYNAMIC_URL.format(uid=uid)
+        print(f"  正在访问: {url}")
 
-        # 如果还是412，尝试备用方法
-        if response.status_code == 412:
-            print(f"  主API被拒绝，尝试备用方法...")
-            # 尝试直接访问动态页面
-            dynamic_url = f'https://space.bilibili.com/{uid}/dynamic'
-            session.get(dynamic_url, timeout=10)
-            time.sleep(2)
-            response = session.get(BILIBILI_API, params=params, timeout=10)
-
+        response = session.get(url, timeout=15)
         response.raise_for_status()
-        data = response.json()
 
-        if data['code'] == 0:
-            return data['data']['items']
-        else:
-            print(f"获取动态失败: {data.get('message', '未知错误')}")
-            return []
+        # 解析HTML
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # 查找动态卡片 - B站动态页面的结构
+        # 动态通常在 <div class="card"> 或类似的容器中
+        dynamic_cards = soup.find_all('div', class_='card')
+
+        if not dynamic_cards:
+            # 尝试其他可能的选择器
+            dynamic_cards = soup.find_all('div', {'data-type': 'dynamic'})
+
+        if not dynamic_cards:
+            # 尝试查找包含动态内容的元素
+            dynamic_cards = soup.find_all('div', class_='bili-dyn-item')
+
+        print(f"  找到 {len(dynamic_cards)} 个动态卡片")
+
+        for card in dynamic_cards[:10]:  # 只处理前10条
+            try:
+                dynamic_data = parse_dynamic_card(card, uid)
+                if dynamic_data:
+                    dynamics.append(dynamic_data)
+            except Exception as e:
+                continue
+
+        # 如果还是没找到，尝试从页面源码中提取JSON数据
+        if not dynamics:
+            dynamics = extract_from_page_source(response.text, uid)
+
     except Exception as e:
-        print(f"请求异常: {str(e)}")
-        return []
+        print(f"  请求异常: {str(e)}")
+
+    return dynamics
+
+
+def parse_dynamic_card(card, uid):
+    """
+    解析动态卡片
+    :param card: BeautifulSoup元素
+    :param uid: UP主UID
+    :return: 动态数据字典
+    """
+    try:
+        # 尝试提取动态ID
+        dynamic_id = ''
+        id_attr = card.get('data-did') or card.get('data-id') or card.get('id', '')
+        if id_attr:
+            dynamic_id = str(id_attr)
+
+        # 尝试提取内容
+        text_content = ''
+        title = ''
+
+        # 查找文本内容
+        text_elem = card.find('div', class_='text') or card.find('p', class_='text')
+        if text_elem:
+            text_content = text_elem.get_text(strip=True)
+
+        # 查找标题
+        title_elem = (
+            card.find('h4') or card.find('h3') or card.find('a', class_='title')
+        )
+        if title_elem:
+            title = title_elem.get_text(strip=True)
+
+        # 查找时间
+        pub_time = ''
+        time_elem = card.find('span', class_='time') or card.find(
+            'div', class_='publish-time'
+        )
+        if time_elem:
+            pub_time = time_elem.get_text(strip=True)
+
+        if not text_content and not title:
+            return None
+
+        return {
+            'id_str': dynamic_id
+            or hashlib.md5(f"{uid}_{time.time()}".encode()).hexdigest(),
+            'title': title,
+            'text': text_content,
+            'pub_time': pub_time,
+            'url': (
+                f"https://t.bilibili.com/{dynamic_id}"
+                if dynamic_id
+                else f"https://space.bilibili.com/{uid}/dynamic"
+            ),
+        }
+    except:
+        return None
+
+
+def extract_from_page_source(html, uid):
+    """
+    从页面源码中提取动态数据
+    :param html: 页面HTML
+    :param uid: UP主UID
+    :return: 动态列表
+    """
+    dynamics = []
+
+    try:
+        # 查找包含动态数据的JSON
+        # B站通常在页面中嵌入JSON数据
+        json_pattern = r'window\.__INITIAL_STATE__\s*=\s*({.*?});'
+        matches = re.findall(json_pattern, html)
+
+        if matches:
+            import json
+
+            data = json.loads(matches[0])
+
+            # 尝试从数据结构中提取动态
+            if 'dynamic' in data:
+                items = data['dynamic'].get('list', [])
+                for item in items[:10]:
+                    try:
+                        dynamic = {
+                            'id_str': str(item.get('id', '')),
+                            'title': item.get('title', ''),
+                            'text': item.get('description', item.get('content', '')),
+                            'pub_time': item.get('pub_time', item.get('pubDate', '')),
+                            'url': f"https://t.bilibili.com/{item.get('id', '')}",
+                        }
+                        if dynamic['text'] or dynamic['title']:
+                            dynamics.append(dynamic)
+                    except:
+                        continue
+    except Exception as e:
+        print(f"  从页面源码提取失败: {str(e)}")
+
+    return dynamics
 
 
 def is_text_post(item):
     """
     判断是否为文字帖子（排除纯图片帖子）
     :param item: 动态项
-    :return: True表示是文字帖子，False表示纯图片帖子
+    :return: True表示是文字帖子
     """
     try:
-        modules = item.get('modules', {})
-        major_module = modules.get('module_dynamic', {}).get('major', {})
+        text = item.get('text', '')
+        title = item.get('title', '')
 
-        # 如果有draw模块（图片），检查是否有opus模块（文字）
-        has_draw = 'draw' in major_module
-        has_opus = 'opus' in major_module
-
-        # 如果有draw但没有opus，说明是纯图片帖子
-        if has_draw and not has_opus:
-            return False
-
-        # 如果有opus，说明是文字帖子
-        if has_opus:
+        # 如果有文字内容或标题，认为是文字帖子
+        if text or title:
             return True
 
-        # 其他情况（如转发、视频等）也返回True，让用户自己判断
-        return True
-
-    except Exception as e:
-        print(f"判断帖子类型失败: {str(e)}")
         return False
+    except:
+        return True
 
 
 def extract_text_content(item):
@@ -133,34 +207,15 @@ def extract_text_content(item):
     :return: 文字内容字典
     """
     try:
-        modules = item.get('modules', {})
-        major_module = modules.get('module_dynamic', {}).get('major', {})
-
         content = {
-            'title': '',
-            'text': '',
-            'publish_time': '',
+            'title': item.get('title', ''),
+            'text': item.get('text', ''),
+            'publish_time': item.get('pub_time', ''),
             'dynamic_id': item.get('id_str', ''),
-            'url': f"https://t.bilibili.com/{item.get('id_str', '')}",
+            'url': item.get('url', ''),
         }
-
-        # 提取opus（图文/文字）内容
-        if 'opus' in major_module:
-            opus = major_module['opus']
-            content['title'] = opus.get('title', '')
-            content['text'] = opus.get('summary', {}).get('text', '')
-            content['publish_time'] = opus.get('pub_time', '')
-
-        # 如果没有opus，尝试从其他模块提取
-        if not content['text']:
-            desc_module = modules.get('module_dynamic', {}).get('desc', {})
-            content['text'] = desc_module.get('text', '')
-            content['publish_time'] = item.get('pub_time', '')
-
         return content
-
-    except Exception as e:
-        print(f"提取内容失败: {str(e)}")
+    except:
         return None
 
 
@@ -201,9 +256,7 @@ def send_wechat_notification(message, send_keys):
 
     for send_key in send_keys:
         try:
-            # Server酱 API
             url = f"https://sctapi.ftqq.com/{send_key}.send"
-
             payload = {'title': 'B站动态监控', 'desp': message}
 
             response = requests.post(url, data=payload, timeout=10)
@@ -231,7 +284,6 @@ def load_config():
     """
     import os
 
-    # 从环境变量读取UP主列表
     up_list_json = os.environ.get('UP_LIST', '[]')
     send_keys_json = os.environ.get('SEND_KEYS', '[]')
 
@@ -278,7 +330,6 @@ def main():
     """
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始监控B站动态...")
 
-    # 加载配置
     config = load_config()
     up_list = config.get('up_list', [])
     send_keys = config.get('send_keys', [])
@@ -291,18 +342,15 @@ def main():
         print("错误: 配置文件中没有SendKey信息")
         sys.exit(1)
 
-    # 加载历史记录
     sent_ids = load_history()
     new_sent_ids = set()
 
-    # 监控每个UP主
     for up in up_list:
         uid = up.get('uid')
         name = up.get('name', f'UID:{uid}')
 
         print(f"\n正在监控: {name} (UID: {uid})")
 
-        # 获取动态
         dynamics = get_up_dynamics(uid)
 
         if not dynamics:
@@ -311,28 +359,22 @@ def main():
 
         print(f"  获取到 {len(dynamics)} 条动态")
 
-        # 处理每条动态
         for item in dynamics:
             dynamic_id = item.get('id_str', '')
 
-            # 跳过已发送的
             if dynamic_id in sent_ids:
                 continue
 
-            # 判断是否为文字帖子
             if not is_text_post(item):
                 print(f"  ⊘ 跳过纯图片帖子: {dynamic_id}")
                 continue
 
-            # 提取内容
             content = extract_text_content(item)
             if not content:
                 continue
 
-            # 格式化消息
             message = format_message(content, name)
 
-            # 发送微信通知
             print(f"  ✓ 发现新文字帖子: {content.get('title', '无标题')}")
             if send_wechat_notification(message, send_keys):
                 new_sent_ids.add(dynamic_id)
@@ -340,7 +382,6 @@ def main():
             else:
                 print(f"  ✗ 推送失败")
 
-    # 保存历史记录
     if new_sent_ids:
         sent_ids.update(new_sent_ids)
         save_history(sent_ids)
