@@ -11,6 +11,7 @@ import time
 import json
 import os
 import sys
+import random
 from functools import reduce
 from urllib.parse import urlencode
 
@@ -451,7 +452,10 @@ def main():
                     all_new.append(d)
                     print(f"  [新] {d['id']} | {d['text'][:40]}...")
 
-        time.sleep(3)  # UP主之间间隔，避免触发频率限制
+        # 随机延迟 2-4 秒，避免固定间隔被识别
+        random_delay = random.uniform(2, 4)
+        print(f"  [安全] 随机延迟 {random_delay:.1f} 秒")
+        time.sleep(random_delay)
 
     # 推送新动态
     print(f"\n{'─' * 40}")
