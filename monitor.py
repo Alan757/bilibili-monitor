@@ -34,6 +34,16 @@ def get_up_dynamics(uid):
     :param uid: UP主的用户ID
     :return: 动态列表
     """
+    # 使用session保持会话
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    # 先访问主页获取必要的cookie
+    try:
+        session.get(f'https://space.bilibili.com/{uid}', timeout=10)
+    except:
+        pass
+
     params = {
         'host_mid': uid,
         'offset': '',
@@ -43,9 +53,7 @@ def get_up_dynamics(uid):
     }
 
     try:
-        response = requests.get(
-            BILIBILI_API, params=params, headers=HEADERS, timeout=10
-        )
+        response = session.get(BILIBILI_API, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
