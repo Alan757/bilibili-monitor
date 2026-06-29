@@ -12,8 +12,10 @@ import hashlib
 from datetime import datetime
 import sys
 
-# B站API配置
+# B站API配置 - 使用动态列表API
 BILIBILI_API = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
+# 备用API
+BILIBILI_API_BACKUP = "https://api.bilibili.com/x/space/wbi/feed/video"
 
 # 请求头，模拟浏览器
 HEADERS = {
@@ -36,11 +38,28 @@ def get_up_dynamics(uid):
     """
     # 使用session保持会话
     session = requests.Session()
-    session.headers.update(HEADERS)
+
+    # 完整的浏览器请求头
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Origin': 'https://space.bilibili.com',
+        'Referer': f'https://space.bilibili.com/{uid}',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+    }
+    session.headers.update(headers)
 
     # 先访问主页获取必要的cookie
     try:
         session.get(f'https://space.bilibili.com/{uid}', timeout=10)
+        time.sleep(1)  # 等待cookie设置
     except:
         pass
 
@@ -54,6 +73,16 @@ def get_up_dynamics(uid):
 
     try:
         response = session.get(BILIBILI_API, params=params, timeout=10)
+
+        # 如果还是412，尝试备用方法
+        if response.status_code == 412:
+            print(f"  主API被拒绝，尝试备用方法...")
+            # 尝试直接访问动态页面
+            dynamic_url = f'https://space.bilibili.com/{uid}/dynamic'
+            session.get(dynamic_url, timeout=10)
+            time.sleep(2)
+            response = session.get(BILIBILI_API, params=params, timeout=10)
+
         response.raise_for_status()
         data = response.json()
 
