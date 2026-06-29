@@ -448,9 +448,13 @@ def main():
 
             for d in text_dynamics:
                 # 只推送上次检测时间之后的新动态
-                if d['pub_ts'] > last_check_time and d['id'] not in sent_ids:
-                    all_new.append(d)
-                    print(f"  [新] {d['id']} | {d['text'][:40]}...")
+                try:
+                    pub_ts_float = float(d['pub_ts'])
+                    if pub_ts_float > last_check_time and d['id'] not in sent_ids:
+                        all_new.append(d)
+                        print(f"  [新] {d['id']} | {d['text'][:40]}...")
+                except (ValueError, TypeError):
+                    continue
 
         # 随机延迟 2-4 秒，避免固定间隔被识别
         random_delay = random.uniform(2, 4)
