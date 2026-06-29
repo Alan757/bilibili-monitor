@@ -13,10 +13,15 @@ from datetime import datetime
 import sys
 import feedparser
 
-# RSSHub服务地址（公共实例）
-RSSHUB_BASE = "https://rsshub.app"
+# RSSHub服务地址（多个公共实例备选）
+RSSHUB_INSTANCES = [
+    "https://rsshub.app",
+    "https://rsshub.rssforever.com",
+    "https://rsshub.ktachibana.party",
+    "https://rsshub.ktachibana.party",
+]
 # B站用户动态RSS格式
-RSS_URL = f"{RSSHUB_BASE}/bilibili/user/dynamic/{{uid}}"
+RSS_URL_TEMPLATE = "/bilibili/user/dynamic/{uid}"
 
 # 请求头
 HEADERS = {
@@ -33,32 +38,41 @@ def get_up_dynamics(uid):
     """
     dynamics = []
 
-    try:
-        url = RSS_URL.format(uid=uid)
-        print(f"  正在获取RSS: {url}")
+    # 尝试多个RSSHub实例
+    for instance in RSSHUB_INSTANCES:
+        try:
+            url = f"{instance}{RSS_URL_TEMPLATE.format(uid=uid)}"
+            print(f"  正在获取RSS: {url}")
+            print(f"  使用实例: {instance}")
 
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
+            response = requests.get(url, headers=HEADERS, timeout=15)
 
-        # 解析RSS feed
-        feed = feedparser.parse(response.content)
+            if response.status_code == 200:
+                # 解析RSS feed
+                feed = feedparser.parse(response.content)
 
-        if not feed.entries:
-            print(f"  未找到动态条目")
-            return dynamics
+                if not feed.entries:
+                    print(f"  未找到动态条目")
+                    return dynamics
 
-        print(f"  找到 {len(feed.entries)} 条动态")
+                print(f"  找到 {len(feed.entries)} 条动态")
 
-        for entry in feed.entries[:10]:  # 只处理前10条
-            try:
-                dynamic_data = parse_rss_entry(entry, uid)
-                if dynamic_data:
-                    dynamics.append(dynamic_data)
-            except Exception as e:
-                continue
+                for entry in feed.entries[:10]:  # 只处理前10条
+                    try:
+                        dynamic_data = parse_rss_entry(entry, uid)
+                        if dynamic_data:
+                            dynamics.append(dynamic_data)
+                    except Exception as e:
+                        continue
 
-    except Exception as e:
-        print(f"  请求异常: {str(e)}")
+                if dynamics:
+                    return dynamics
+            else:
+                print(f"  RSSHub实例 {instance} 返回 {response.status_code}")
+
+        except Exception as e:
+            print(f"  RSSHub实例 {instance} 失败: {str(e)}")
+            continue
 
     return dynamics
 
