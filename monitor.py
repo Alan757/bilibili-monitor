@@ -300,7 +300,11 @@ class BiliMonitor:
             pub_ts = author_module.get('pub_ts', 0)
             pub_time = ''
             if pub_ts:
-                pub_time = time.strftime('%m-%d %H:%M', time.localtime(pub_ts))
+                try:
+                    pub_ts_int = int(pub_ts)
+                    pub_time = time.strftime('%m-%d %H:%M', time.localtime(pub_ts_int))
+                except (ValueError, TypeError):
+                    pub_time = str(pub_ts)
 
             results.append(
                 {
