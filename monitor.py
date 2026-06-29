@@ -1,342 +1,443 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-B站UP主动态监控脚本 - 多方案版本
-尝试多种方式获取B站动态
+B站UP主动态监控脚本 - WBI签名版本
+使用WBI签名和buvid cookie绕过反爬虫
 """
 
 import requests
-import json
-import time
 import hashlib
-from datetime import datetime
+import time
+import json
+import os
 import sys
+from functools import reduce
+from urllib.parse import urlencode
 
-# 尝试多个数据源
-# 方案1: B站移动端API
-MOBILE_API = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
-# 方案2: B站动态页面
-DYNAMIC_URL = "https://space.bilibili.com/{uid}/dynamic"
-# 方案3: RSSHub
-RSSHUB_URL = "https://rsshub.app/bilibili/user/dynamic/{uid}"
+# ===== WBI签名 =====
+MIXIN_KEY_ENC_TAB = [
+    46,
+    47,
+    18,
+    2,
+    53,
+    8,
+    23,
+    32,
+    15,
+    50,
+    10,
+    31,
+    58,
+    3,
+    45,
+    35,
+    27,
+    43,
+    5,
+    49,
+    33,
+    9,
+    42,
+    19,
+    29,
+    28,
+    14,
+    39,
+    12,
+    38,
+    41,
+    13,
+    37,
+    48,
+    7,
+    16,
+    24,
+    55,
+    40,
+    61,
+    26,
+    17,
+    0,
+    1,
+    60,
+    51,
+    30,
+    4,
+    22,
+    25,
+    54,
+    21,
+    56,
+    59,
+    6,
+    63,
+    57,
+    62,
+    11,
+    36,
+    20,
+    34,
+    44,
+    52,
+]
 
-# 请求头
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Origin': 'https://space.bilibili.com',
-    'Referer': 'https://space.bilibili.com/',
-}
+
+def get_mixin_key(orig: str) -> str:
+    return reduce(lambda s, i: s + orig[i], MIXIN_KEY_ENC_TAB, '')[:32]
 
 
-def get_up_dynamics(uid):
-    """
-    通过RSSHub获取UP主的动态
-    :param uid: UP主的用户ID
-    :return: 动态列表
-    """
-    dynamics = []
+def enc_wbi(params: dict, img_key: str, sub_key: str) -> dict:
+    mixin_key = get_mixin_key(img_key + sub_key)
+    curr_time = round(time.time())
+    params['wts'] = curr_time
+    params = dict(sorted(params.items()))
+    params = {
+        k: ''.join(filter(lambda ch: ch not in "!'()*", str(v)))
+        for k, v in params.items()
+    }
+    query = urlencode(params)
+    wbi_sign = hashlib.md5((query + mixin_key).encode()).hexdigest()
+    params['w_rid'] = wbi_sign
+    return params
 
-    # 尝试多个RSSHub实例
-    for instance in RSSHUB_INSTANCES:
+
+class BiliMonitor:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/126.0.0.0 Safari/537.36',
+                'Referer': 'https://space.bilibili.com/',
+                'Origin': 'https://space.bilibili.com',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'sec-ch-ua': '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="8"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'same-site',
+            }
+        )
+        self.img_key = ''
+        self.sub_key = ''
+
+    def init_cookies(self):
+        """获取buvid3/buvid4指纹cookie"""
         try:
-            url = f"{instance}{RSS_URL_TEMPLATE.format(uid=uid)}"
-            print(f"  正在获取RSS: {url}")
-            print(f"  使用实例: {instance}")
-
-            response = requests.get(url, headers=HEADERS, timeout=15)
-
-            if response.status_code == 200:
-                # 解析RSS feed
-                feed = feedparser.parse(response.content)
-
-                if not feed.entries:
-                    print(f"  未找到动态条目")
-                    return dynamics
-
-                print(f"  找到 {len(feed.entries)} 条动态")
-
-                for entry in feed.entries[:10]:  # 只处理前10条
-                    try:
-                        dynamic_data = parse_rss_entry(entry, uid)
-                        if dynamic_data:
-                            dynamics.append(dynamic_data)
-                    except Exception as e:
-                        continue
-
-                if dynamics:
-                    return dynamics
-            else:
-                print(f"  RSSHub实例 {instance} 返回 {response.status_code}")
-
-        except Exception as e:
-            print(f"  RSSHub实例 {instance} 失败: {str(e)}")
-            continue
-
-    return dynamics
-
-
-def parse_rss_entry(entry, uid):
-    """
-    解析RSS条目
-    :param entry: feedparser条目
-    :param uid: UP主UID
-    :return: 动态数据字典
-    """
-    try:
-        # 获取标题和内容
-        title = entry.get('title', '')
-        content = entry.get('summary', entry.get('description', ''))
-
-        # 清理HTML标签
-        from bs4 import BeautifulSoup
-
-        if content:
-            soup = BeautifulSoup(content, 'lxml')
-            content = soup.get_text(strip=True)
-
-        # 获取发布时间
-        pub_time = ''
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            pub_time = datetime(*entry.published_parsed[:6]).strftime(
-                '%Y-%m-%d %H:%M:%S'
+            resp = self.session.get(
+                'https://api.bilibili.com/x/frontend/finger/spi', timeout=10
             )
-        elif hasattr(entry, 'published'):
-            pub_time = entry.published
-
-        # 获取链接
-        link = entry.get('link', f'https://space.bilibili.com/{uid}/dynamic')
-
-        # 生成唯一ID
-        dynamic_id = hashlib.md5(link.encode()).hexdigest()
-
-        # 判断是否有内容
-        if not content and not title:
-            return None
-
-        return {
-            'id_str': dynamic_id,
-            'title': title,
-            'text': content,
-            'pub_time': pub_time,
-            'url': link,
-        }
-    except Exception as e:
-        print(f"  解析条目失败: {str(e)}")
-        return None
-
-
-def is_text_post(item):
-    """
-    判断是否为文字帖子
-    :param item: 动态项
-    :return: True表示是文字帖子
-    """
-    try:
-        text = item.get('text', '')
-        title = item.get('title', '')
-
-        # 如果有文字内容或标题，认为是文字帖子
-        if text or title:
-            return True
-
-        return False
-    except:
-        return True
-
-
-def extract_text_content(item):
-    """
-    提取文字内容
-    :param item: 动态项
-    :return: 文字内容字典
-    """
-    try:
-        content = {
-            'title': item.get('title', ''),
-            'text': item.get('text', ''),
-            'publish_time': item.get('pub_time', ''),
-            'dynamic_id': item.get('id_str', ''),
-            'url': item.get('url', ''),
-        }
-        return content
-    except:
-        return None
-
-
-def format_message(content, up_name):
-    """
-    格式化推送消息
-    :param content: 内容字典
-    :param up_name: UP主名称
-    :return: 格式化后的消息
-    """
-    title = content.get('title', '无标题')
-    text = content.get('text', '')
-    pub_time = content.get('publish_time', '')
-    url = content.get('url', '')
-
-    # 截断过长的文本
-    if len(text) > 200:
-        text = text[:200] + "..."
-
-    message = f"📢 B站动态提醒\n\n"
-    message += f"UP主: {up_name}\n"
-    message += f"标题: {title}\n"
-    message += f"时间: {pub_time}\n"
-    message += f"\n内容:\n{text}\n"
-    message += f"\n🔗 查看原文: {url}"
-
-    return message
-
-
-def send_wechat_notification(message, send_keys):
-    """
-    发送微信通知（使用Server酱）
-    :param message: 消息内容
-    :param send_keys: SendKey列表
-    :return: 是否发送成功
-    """
-    success = True
-
-    for send_key in send_keys:
-        try:
-            url = f"https://sctapi.ftqq.com/{send_key}.send"
-            payload = {'title': 'B站动态监控', 'desp': message}
-
-            response = requests.post(url, data=payload, timeout=10)
-            result = response.json()
-
-            if result.get('code') == 0:
-                print(f"✓ 微信推送成功 (SendKey: {send_key[:8]}...)")
+            if resp.status_code == 200:
+                data = resp.json().get('data', {})
+                b_3 = data.get('b_3', '')
+                b_4 = data.get('b_4', '')
+                self.session.cookies.set('buvid3', b_3, domain='.bilibili.com')
+                self.session.cookies.set('buvid4', b_4, domain='.bilibili.com')
+                print(f"[OK] buvid3={b_3[:20]}...")
+                return True
             else:
+                print(f"[WARN] 获取buvid失败: HTTP {resp.status_code}")
+                return False
+        except Exception as e:
+            print(f"[ERROR] 获取buvid异常: {e}")
+            return False
+
+    def load_extra_cookie(self):
+        """加载额外的B站cookie（可选，增强反爬能力）"""
+        cookie_str = os.environ.get('BILI_COOKIE', '')
+        if cookie_str:
+            for item in cookie_str.split(';'):
+                item = item.strip()
+                if '=' in item:
+                    key, value = item.split('=', 1)
+                    self.session.cookies.set(
+                        key.strip(), value.strip(), domain='.bilibili.com'
+                    )
+            print("[OK] 已加载额外BILI_COOKIE")
+
+    def get_wbi_keys(self):
+        """获取WBI签名密钥"""
+        try:
+            resp = self.session.get(
+                'https://api.bilibili.com/x/web-interface/nav', timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json().get('data', {})
+                wbi_img = data.get('wbi_img', {})
+                img_url = wbi_img.get('img_url', '')
+                sub_url = wbi_img.get('sub_url', '')
+                if '/' in img_url and '/' in sub_url:
+                    self.img_key = img_url.rsplit('/', 1)[1].split('.')[0]
+                    self.sub_key = sub_url.rsplit('/', 1)[1].split('.')[0]
+                    print(f"[OK] WBI keys获取成功")
+                    return True
+            print(f"[WARN] WBI获取失败: HTTP {resp.status_code}")
+            return False
+        except Exception as e:
+            print(f"[ERROR] WBI获取异常: {e}")
+            return False
+
+    def get_dynamics(self, uid: str):
+        """获取UP主动态列表"""
+        params = {
+            'host_mid': uid,
+            'timezone_offset': -480,
+            'platform': 'web',
+            'features': 'itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote',
+        }
+
+        signed_params = enc_wbi(params, self.img_key, self.sub_key)
+        url = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space'
+
+        try:
+            resp = self.session.get(url, params=signed_params, timeout=15)
+            print(f"  [API] uid={uid} HTTP={resp.status_code}")
+
+            if resp.status_code == 412:
+                print("  [!] 412错误 - 被反爬拦截，请配置BILI_COOKIE")
+                return []
+
+            if resp.status_code != 200:
+                print(f"  [!] 异常响应: {resp.text[:200]}")
+                return []
+
+            data = resp.json()
+            if data.get('code') != 0:
                 print(
-                    f"✗ 微信推送失败 (SendKey: {send_key[:8]}...): {result.get('message', '未知错误')}"
+                    f"  [!] API错误: code={data.get('code')} msg={data.get('message')}"
                 )
-                success = False
+                return []
+
+            items = data.get('data', {}).get('items', [])
+            return items
 
         except Exception as e:
-            print(f"✗ 微信推送异常 (SendKey: {send_key[:8]}...): {str(e)}")
-            success = False
+            print(f"  [ERROR] 请求异常: {e}")
+            return []
 
-    return success
+    def extract_text_content(self, item):
+        """从动态中提取文字内容，无文字返回空字符串"""
+        modules = item.get('modules', {})
+        dynamic_module = modules.get('module_dynamic', {})
+        text_parts = []
+
+        # 1. 从 desc 提取（纯文字动态、图文动态的文字部分）
+        desc = dynamic_module.get('desc', {})
+        if desc:
+            rich_text_nodes = desc.get('rich_text_nodes', [])
+            if rich_text_nodes:
+                for node in rich_text_nodes:
+                    orig_text = node.get('orig_text', '') or node.get('text', '')
+                    if orig_text:
+                        text_parts.append(orig_text)
+            elif desc.get('text'):
+                text_parts.append(desc['text'])
+
+        # 2. 从 major.opus 提取（新版opus格式）
+        major = dynamic_module.get('major', {})
+        if major:
+            opus = major.get('opus', {})
+            if opus:
+                # opus summary
+                summary = opus.get('summary', {})
+                if summary:
+                    rich_text_nodes = summary.get('rich_text_nodes', [])
+                    if rich_text_nodes:
+                        for node in rich_text_nodes:
+                            orig_text = node.get('orig_text', '') or node.get(
+                                'text', ''
+                            )
+                            if orig_text:
+                                text_parts.append(orig_text)
+                    elif summary.get('text'):
+                        text_parts.append(summary['text'])
+                # opus title
+                title = opus.get('title', '')
+                if title:
+                    text_parts.insert(0, f"【{title}】")
+
+            # major.article（专栏）
+            article = major.get('article', {})
+            if article:
+                title = article.get('title', '')
+                desc_text = article.get('desc', '')
+                if title:
+                    text_parts.append(f"【专栏】{title}")
+                if desc_text:
+                    text_parts.append(desc_text)
+
+        # 合并去重
+        full_text = '\n'.join(text_parts).strip()
+        return full_text
+
+    def process_dynamics(self, items, up_name):
+        """处理动态列表，返回有文字的动态"""
+        results = []
+        for item in items:
+            dynamic_id = item.get('id_str', '')
+            dynamic_type = item.get('type', '')
+
+            # 跳过视频和直播类型
+            if dynamic_type in (
+                'DYNAMIC_TYPE_AV',
+                'DYNAMIC_TYPE_LIVE_RCMD',
+                'DYNAMIC_TYPE_LIVE',
+                'DYNAMIC_TYPE_PGC',
+            ):
+                continue
+
+            text = self.extract_text_content(item)
+
+            if not text:
+                continue
+
+            # 获取发布时间
+            author_module = item.get('modules', {}).get('module_author', {})
+            pub_ts = author_module.get('pub_ts', 0)
+            pub_time = ''
+            if pub_ts:
+                pub_time = time.strftime('%m-%d %H:%M', time.localtime(pub_ts))
+
+            results.append(
+                {
+                    'id': dynamic_id,
+                    'type': dynamic_type,
+                    'text': text,
+                    'pub_time': pub_time,
+                    'pub_ts': pub_ts,
+                    'up_name': up_name,
+                    'url': f'https://www.bilibili.com/opus/{dynamic_id}',
+                }
+            )
+
+        return results
 
 
-def load_config():
-    """
-    从环境变量加载配置
-    :return: 配置字典
-    """
-    import os
-
-    up_list_json = os.environ.get('UP_LIST', '[]')
-    send_keys_json = os.environ.get('SEND_KEYS', '[]')
-
+def send_wechat(send_key, title, content):
+    """通过Server酱推送微信消息"""
+    url = f'https://sctapi.ftqq.com/{send_key}.send'
+    data = {
+        'title': title[:100],
+        'desp': content,
+    }
     try:
-        up_list = json.loads(up_list_json)
-        send_keys = json.loads(send_keys_json)
-
-        return {'up_list': up_list, 'send_keys': send_keys}
-    except json.JSONDecodeError as e:
-        print(f"错误: 环境变量配置格式错误: {str(e)}")
-        sys.exit(1)
-
-
-def load_history():
-    """
-    加载已发送的历史记录
-    :return: 已发送的动态ID集合
-    """
-    try:
-        with open('history.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return set(data.get('sent_ids', []))
-    except FileNotFoundError:
-        return set()
-    except json.JSONDecodeError:
-        return set()
-
-
-def save_history(sent_ids):
-    """
-    保存已发送的历史记录
-    :param sent_ids: 已发送的动态ID集合
-    """
-    try:
-        with open('history.json', 'w', encoding='utf-8') as f:
-            json.dump({'sent_ids': list(sent_ids)}, f, ensure_ascii=False, indent=2)
+        resp = requests.post(url, data=data, timeout=10)
+        result = resp.json()
+        if result.get('code') == 0:
+            print(f"  [推送成功] {send_key[:8]}...")
+        else:
+            print(f"  [推送失败] {send_key[:8]}... msg={result.get('message')}")
+        return result.get('code') == 0
     except Exception as e:
-        print(f"保存历史记录失败: {str(e)}")
+        print(f"  [推送异常] {e}")
+        return False
+
+
+def load_sent_ids():
+    """加载已发送的动态ID列表"""
+    try:
+        with open('sent_ids.json', 'r') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def save_sent_ids(ids):
+    """保存已发送的动态ID（保留最新300条）"""
+    with open('sent_ids.json', 'w') as f:
+        json.dump(ids[-300:], f, ensure_ascii=False)
 
 
 def main():
-    """
-    主函数
-    """
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始监控B站动态...")
+    print("=" * 50)
+    print(f"[启动] B站动态监控 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
 
-    config = load_config()
-    up_list = config.get('up_list', [])
-    send_keys = config.get('send_keys', [])
+    # 读取配置
+    up_list_str = os.environ.get('UP_LIST', '')
+    send_keys_str = os.environ.get('SEND_KEYS', '')
 
-    if not up_list:
-        print("错误: 配置文件中没有UP主信息")
+    if not up_list_str or not send_keys_str:
+        print("[ERROR] 环境变量 UP_LIST 或 SEND_KEYS 未配置")
         sys.exit(1)
 
-    if not send_keys:
-        print("错误: 配置文件中没有SendKey信息")
-        sys.exit(1)
+    up_list = json.loads(up_list_str)
+    send_keys = json.loads(send_keys_str)
 
-    sent_ids = load_history()
-    new_sent_ids = set()
+    print(f"[配置] 监控UP主: {len(up_list)}个, 推送目标: {len(send_keys)}个")
+
+    # 加载已发送记录
+    sent_ids = load_sent_ids()
+    print(f"[状态] 已有发送记录: {len(sent_ids)}条")
+
+    # 初始化监控器
+    monitor = BiliMonitor()
+    monitor.load_extra_cookie()
+
+    if not monitor.init_cookies():
+        print("[WARN] buvid获取失败，继续尝试...")
+    time.sleep(1)
+
+    if not monitor.get_wbi_keys():
+        print("[ERROR] WBI密钥获取失败，无法继续")
+        sys.exit(1)
+    time.sleep(1)
+
+    # 检查每个UP主
+    all_new = []
 
     for up in up_list:
-        uid = up.get('uid')
-        name = up.get('name', f'UID:{uid}')
+        uid = up['uid']
+        name = up['name']
+        print(f"\n{'─' * 40}")
+        print(f"[检查] {name} (uid={uid})")
 
-        print(f"\n正在监控: {name} (UID: {uid})")
+        items = monitor.get_dynamics(uid)
+        print(f"  获取到 {len(items)} 条动态")
 
-        dynamics = get_up_dynamics(uid)
+        if items:
+            text_dynamics = monitor.process_dynamics(items, name)
+            print(f"  其中含文字的: {len(text_dynamics)} 条")
 
-        if not dynamics:
-            print(f"  未获取到动态")
-            continue
+            for d in text_dynamics:
+                if d['id'] not in sent_ids:
+                    all_new.append(d)
+                    print(f"  [新] {d['id']} | {d['text'][:40]}...")
 
-        print(f"  获取到 {len(dynamics)} 条动态")
+        time.sleep(3)  # UP主之间间隔，避免触发频率限制
 
-        for item in dynamics:
-            dynamic_id = item.get('id_str', '')
+    # 推送新动态
+    print(f"\n{'─' * 40}")
+    print(f"[汇总] 发现 {len(all_new)} 条新动态需要推送")
 
-            if dynamic_id in sent_ids:
-                continue
+    for d in all_new:
+        title = f"{d['up_name']}发布新动态"
+        content = (
+            f"**{d['up_name']}** · {d['pub_time']}\n\n"
+            f"---\n\n"
+            f"{d['text']}\n\n"
+            f"---\n\n"
+            f"🔗 [点击查看原文]({d['url']})"
+        )
 
-            if not is_text_post(item):
-                print(f"  ⊘ 跳过纯图片帖子: {dynamic_id}")
-                continue
+        print(f"\n[推送] {title}")
+        for key in send_keys:
+            send_wechat(key, title, content)
+            time.sleep(1)
 
-            content = extract_text_content(item)
-            if not content:
-                continue
+        sent_ids.append(d['id'])
 
-            message = format_message(content, name)
-
-            print(f"  ✓ 发现新文字帖子: {content.get('title', '无标题')}")
-            if send_wechat_notification(message, send_keys):
-                new_sent_ids.add(dynamic_id)
-                print(f"  ✓ 已推送")
-            else:
-                print(f"  ✗ 推送失败")
-
-    if new_sent_ids:
-        sent_ids.update(new_sent_ids)
-        save_history(sent_ids)
-        print(f"\n✓ 本次推送 {len(new_sent_ids)} 条新动态")
-    else:
-        print(f"\n✓ 没有新动态需要推送")
-
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 监控完成")
+    # 保存状态
+    save_sent_ids(sent_ids)
+    print(f"\n[完成] 已保存发送记录，当前共 {len(sent_ids)} 条")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
