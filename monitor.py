@@ -365,7 +365,7 @@ def load_last_check_time(up_name):
             return timestamp
     except (FileNotFoundError, ValueError):
         # 默认使用2026-06-29 17:00:00 UTC+8 (2026-06-29 09:00:00 UTC)
-        return 1788028800  # 2026-06-29 09:00:00 UTC
+        return 1782694800  # 2026-06-29 09:00:00 UTC
 
 
 def save_last_check_time(up_name, timestamp):
@@ -438,8 +438,10 @@ def main():
 
         print(f"\n{'─' * 40}")
         print(f"[检查] {name} (uid={uid})")
+        # 显示UTC+8时间
+        utc8_time = time.gmtime(last_check_time + 8 * 3600)
         print(
-            f"[时间] 上次检测: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_check_time))}"
+            f"[时间] 上次检测: {time.strftime('%Y-%m-%d %H:%M:%S', utc8_time)} (UTC+8)"
         )
 
         items = monitor.get_dynamics(uid)
