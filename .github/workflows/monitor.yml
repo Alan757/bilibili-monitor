@@ -22,24 +22,9 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 恢复发送记录缓存
-        uses: actions/cache/restore@v4
-        with:
-          path: sent_ids.json
-          key: sent-ids-${{ github.run_id }}
-          restore-keys: |
-            sent-ids-
-
       - name: 运行监控脚本
         env:
           UP_LIST: ${{ secrets.UP_LIST }}
           SEND_KEYS: ${{ secrets.SEND_KEYS }}
           BILI_COOKIE: ${{ secrets.BILI_COOKIE }}
         run: python monitor.py
-
-      - name: 保存发送记录缓存
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: sent_ids.json
-          key: sent-ids-${{ github.run_id }}
