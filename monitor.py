@@ -354,20 +354,25 @@ def load_sent_ids():
     return []
 
 
-def load_last_check_time():
-    """加载上次检测时间"""
+def load_last_check_time(up_name):
+    """加载指定UP主的上次检测时间"""
+    # 为每个UP主使用独立的时间戳文件
+    safe_name = up_name.replace('/', '_').replace('\\', '_')
+    filename = f'last_check_time_{safe_name}.txt'
     try:
-        with open('last_check_time.txt', 'r') as f:
+        with open(filename, 'r') as f:
             timestamp = float(f.read().strip())
             return timestamp
     except (FileNotFoundError, ValueError):
         # 默认使用2026-06-29 17:00:00 UTC+8 (2026-06-29 09:00:00 UTC)
-        return 1751289600  # 2026-06-29 09:00:00 UTC
+        return 1788028800  # 2026-06-29 09:00:00 UTC
 
 
-def save_last_check_time(timestamp):
-    """保存上次检测时间"""
-    with open('last_check_time.txt', 'w') as f:
+def save_last_check_time(up_name, timestamp):
+    """保存指定UP主的上次检测时间"""
+    safe_name = up_name.replace('/', '_').replace('\\', '_')
+    filename = f'last_check_time_{safe_name}.txt'
+    with open(filename, 'w') as f:
         f.write(str(timestamp))
 
 
@@ -404,19 +409,6 @@ def main():
 
     print(f"[配置] 监控UP主: {len(up_list)}个, 推送目标: {len(send_keys)}个")
 
-    # 加载已发送记录和上次检测时间
-    sent_ids = load_sent_ids()
-    last_check_time = load_last_check_time()
-    current_time = time.time()
-
-    print(f"[状态] 已有发送记录: {len(sent_ids)}条")
-    print(
-        f"[时间] 上次检测: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_check_time))}"
-    )
-    print(
-        f"[时间] 当前时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}"
-    )
-
     # 初始化监控器
     monitor = BiliMonitor()
     monitor.load_extra_cookie()
@@ -432,12 +424,23 @@ def main():
 
     # 检查每个UP主
     all_new = []
+    sent_ids = load_sent_ids()
+    current_time = time.time()
+
+    print(f"[状态] 已有发送记录: {len(sent_ids)}条")
 
     for up in up_list:
         uid = up['uid']
         name = up['name']
+
+        # 为每个UP主加载独立的上次检测时间
+        last_check_time = load_last_check_time(name)
+
         print(f"\n{'─' * 40}")
         print(f"[检查] {name} (uid={uid})")
+        print(
+            f"[时间] 上次检测: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_check_time))}"
+        )
 
         items = monitor.get_dynamics(uid)
         print(f"  获取到 {len(items)} 条动态")
@@ -455,6 +458,10 @@ def main():
                         print(f"  [新] {d['id']} | {d['text'][:40]}...")
                 except (ValueError, TypeError):
                     continue
+
+        # 保存当前UP主的上次检测时间
+        save_last_check_time(name, current_time)
+        print(f"[时间] 已更新 {name} 的检测时间")
 
         # 随机延迟 2-4 秒，避免固定间隔被识别
         random_delay = random.uniform(2, 4)
@@ -484,7 +491,6 @@ def main():
 
     # 保存状态
     save_sent_ids(sent_ids)
-    save_last_check_time(current_time)
     print(f"\n[完成] 已保存发送记录，当前共 {len(sent_ids)} 条")
 
 
