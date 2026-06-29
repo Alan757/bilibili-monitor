@@ -384,6 +384,9 @@ def main():
     # 读取配置
     up_list_str = os.environ.get('UP_LIST', '')
     send_keys_str = os.environ.get('SEND_KEYS', '')
+    monitor_names_str = os.environ.get(
+        'MONITOR_NAMES', ''
+    )  # 可选：指定要监控的UP主名称
 
     if not up_list_str or not send_keys_str:
         print("[ERROR] 环境变量 UP_LIST 或 SEND_KEYS 未配置")
@@ -391,6 +394,12 @@ def main():
 
     up_list = json.loads(up_list_str)
     send_keys = json.loads(send_keys_str)
+
+    # 如果指定了MONITOR_NAMES，只监控指定的UP主
+    if monitor_names_str:
+        monitor_names = [name.strip() for name in monitor_names_str.split(',')]
+        up_list = [up for up in up_list if up['name'] in monitor_names]
+        print(f"[过滤] 只监控: {', '.join(monitor_names)}")
 
     print(f"[配置] 监控UP主: {len(up_list)}个, 推送目标: {len(send_keys)}个")
 

@@ -22,4 +22,5 @@ jobs:
           UP_LIST: ${{ secrets.UP_LIST }}
           SEND_KEYS: ${{ secrets.SEND_KEYS }}
           BILI_COOKIE: ${{ secrets.BILI_COOKIE }}
+          MONITOR_NAMES: 股市里的猩猩
         run: python monitor.py
