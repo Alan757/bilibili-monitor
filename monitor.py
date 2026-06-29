@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-B站UP主动态监控脚本 - 网页抓取版本
-监控指定UP主的文字帖子，过滤纯图片帖子，通过微信推送
+B站UP主动态监控脚本 - RSSHub版本
+使用RSSHub服务获取B站动态，避免反爬虫问题
 """
 
 import requests
@@ -11,70 +11,51 @@ import time
 import hashlib
 from datetime import datetime
 import sys
-from bs4 import BeautifulSoup
-import re
+import feedparser
 
-# B站动态页面URL
-DYNAMIC_URL = "https://space.bilibili.com/{uid}/dynamic"
+# RSSHub服务地址（公共实例）
+RSSHUB_BASE = "https://rsshub.app"
+# B站用户动态RSS格式
+RSS_URL = f"{RSSHUB_BASE}/bilibili/user/dynamic/{{uid}}"
 
-# 请求头，模拟真实浏览器
+# 请求头
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/rss+xml, application/xml, text/xml',
 }
 
 
 def get_up_dynamics(uid):
     """
-    通过网页抓取获取UP主的动态列表
+    通过RSSHub获取UP主的动态
     :param uid: UP主的用户ID
     :return: 动态列表
     """
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
     dynamics = []
 
     try:
-        # 访问动态页面
-        url = DYNAMIC_URL.format(uid=uid)
-        print(f"  正在访问: {url}")
+        url = RSS_URL.format(uid=uid)
+        print(f"  正在获取RSS: {url}")
 
-        response = session.get(url, timeout=15)
+        response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
 
-        # 解析HTML
-        soup = BeautifulSoup(response.text, 'lxml')
+        # 解析RSS feed
+        feed = feedparser.parse(response.content)
 
-        # 查找动态卡片 - B站动态页面的结构
-        # 动态通常在 <div class="card"> 或类似的容器中
-        dynamic_cards = soup.find_all('div', class_='card')
+        if not feed.entries:
+            print(f"  未找到动态条目")
+            return dynamics
 
-        if not dynamic_cards:
-            # 尝试其他可能的选择器
-            dynamic_cards = soup.find_all('div', {'data-type': 'dynamic'})
+        print(f"  找到 {len(feed.entries)} 条动态")
 
-        if not dynamic_cards:
-            # 尝试查找包含动态内容的元素
-            dynamic_cards = soup.find_all('div', class_='bili-dyn-item')
-
-        print(f"  找到 {len(dynamic_cards)} 个动态卡片")
-
-        for card in dynamic_cards[:10]:  # 只处理前10条
+        for entry in feed.entries[:10]:  # 只处理前10条
             try:
-                dynamic_data = parse_dynamic_card(card, uid)
+                dynamic_data = parse_rss_entry(entry, uid)
                 if dynamic_data:
                     dynamics.append(dynamic_data)
             except Exception as e:
                 continue
-
-        # 如果还是没找到，尝试从页面源码中提取JSON数据
-        if not dynamics:
-            dynamics = extract_from_page_source(response.text, uid)
 
     except Exception as e:
         print(f"  请求异常: {str(e)}")
@@ -82,108 +63,59 @@ def get_up_dynamics(uid):
     return dynamics
 
 
-def parse_dynamic_card(card, uid):
+def parse_rss_entry(entry, uid):
     """
-    解析动态卡片
-    :param card: BeautifulSoup元素
+    解析RSS条目
+    :param entry: feedparser条目
     :param uid: UP主UID
     :return: 动态数据字典
     """
     try:
-        # 尝试提取动态ID
-        dynamic_id = ''
-        id_attr = card.get('data-did') or card.get('data-id') or card.get('id', '')
-        if id_attr:
-            dynamic_id = str(id_attr)
+        # 获取标题和内容
+        title = entry.get('title', '')
+        content = entry.get('summary', entry.get('description', ''))
 
-        # 尝试提取内容
-        text_content = ''
-        title = ''
+        # 清理HTML标签
+        from bs4 import BeautifulSoup
 
-        # 查找文本内容
-        text_elem = card.find('div', class_='text') or card.find('p', class_='text')
-        if text_elem:
-            text_content = text_elem.get_text(strip=True)
+        if content:
+            soup = BeautifulSoup(content, 'lxml')
+            content = soup.get_text(strip=True)
 
-        # 查找标题
-        title_elem = (
-            card.find('h4') or card.find('h3') or card.find('a', class_='title')
-        )
-        if title_elem:
-            title = title_elem.get_text(strip=True)
-
-        # 查找时间
+        # 获取发布时间
         pub_time = ''
-        time_elem = card.find('span', class_='time') or card.find(
-            'div', class_='publish-time'
-        )
-        if time_elem:
-            pub_time = time_elem.get_text(strip=True)
+        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+            pub_time = datetime(*entry.published_parsed[:6]).strftime(
+                '%Y-%m-%d %H:%M:%S'
+            )
+        elif hasattr(entry, 'published'):
+            pub_time = entry.published
 
-        if not text_content and not title:
+        # 获取链接
+        link = entry.get('link', f'https://space.bilibili.com/{uid}/dynamic')
+
+        # 生成唯一ID
+        dynamic_id = hashlib.md5(link.encode()).hexdigest()
+
+        # 判断是否有内容
+        if not content and not title:
             return None
 
         return {
-            'id_str': dynamic_id
-            or hashlib.md5(f"{uid}_{time.time()}".encode()).hexdigest(),
+            'id_str': dynamic_id,
             'title': title,
-            'text': text_content,
+            'text': content,
             'pub_time': pub_time,
-            'url': (
-                f"https://t.bilibili.com/{dynamic_id}"
-                if dynamic_id
-                else f"https://space.bilibili.com/{uid}/dynamic"
-            ),
+            'url': link,
         }
-    except:
-        return None
-
-
-def extract_from_page_source(html, uid):
-    """
-    从页面源码中提取动态数据
-    :param html: 页面HTML
-    :param uid: UP主UID
-    :return: 动态列表
-    """
-    dynamics = []
-
-    try:
-        # 查找包含动态数据的JSON
-        # B站通常在页面中嵌入JSON数据
-        json_pattern = r'window\.__INITIAL_STATE__\s*=\s*({.*?});'
-        matches = re.findall(json_pattern, html)
-
-        if matches:
-            import json
-
-            data = json.loads(matches[0])
-
-            # 尝试从数据结构中提取动态
-            if 'dynamic' in data:
-                items = data['dynamic'].get('list', [])
-                for item in items[:10]:
-                    try:
-                        dynamic = {
-                            'id_str': str(item.get('id', '')),
-                            'title': item.get('title', ''),
-                            'text': item.get('description', item.get('content', '')),
-                            'pub_time': item.get('pub_time', item.get('pubDate', '')),
-                            'url': f"https://t.bilibili.com/{item.get('id', '')}",
-                        }
-                        if dynamic['text'] or dynamic['title']:
-                            dynamics.append(dynamic)
-                    except:
-                        continue
     except Exception as e:
-        print(f"  从页面源码提取失败: {str(e)}")
-
-    return dynamics
+        print(f"  解析条目失败: {str(e)}")
+        return None
 
 
 def is_text_post(item):
     """
-    判断是否为文字帖子（排除纯图片帖子）
+    判断是否为文字帖子
     :param item: 动态项
     :return: True表示是文字帖子
     """
