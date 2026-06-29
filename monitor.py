@@ -353,6 +353,23 @@ def load_sent_ids():
     return []
 
 
+def load_last_check_time():
+    """加载上次检测时间"""
+    try:
+        with open('last_check_time.txt', 'r') as f:
+            timestamp = float(f.read().strip())
+            return timestamp
+    except (FileNotFoundError, ValueError):
+        # 默认使用2026-06-29 17:00:00 UTC+8 (2026-06-29 09:00:00 UTC)
+        return 1751289600  # 2026-06-29 09:00:00 UTC
+
+
+def save_last_check_time(timestamp):
+    """保存上次检测时间"""
+    with open('last_check_time.txt', 'w') as f:
+        f.write(str(timestamp))
+
+
 def save_sent_ids(ids):
     """保存已发送的动态ID（保留最新300条）"""
     with open('sent_ids.json', 'w') as f:
@@ -377,9 +394,18 @@ def main():
 
     print(f"[配置] 监控UP主: {len(up_list)}个, 推送目标: {len(send_keys)}个")
 
-    # 加载已发送记录
+    # 加载已发送记录和上次检测时间
     sent_ids = load_sent_ids()
+    last_check_time = load_last_check_time()
+    current_time = time.time()
+
     print(f"[状态] 已有发送记录: {len(sent_ids)}条")
+    print(
+        f"[时间] 上次检测: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_check_time))}"
+    )
+    print(
+        f"[时间] 当前时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}"
+    )
 
     # 初始化监控器
     monitor = BiliMonitor()
@@ -411,7 +437,8 @@ def main():
             print(f"  其中含文字的: {len(text_dynamics)} 条")
 
             for d in text_dynamics:
-                if d['id'] not in sent_ids:
+                # 只推送上次检测时间之后的新动态
+                if d['pub_ts'] > last_check_time and d['id'] not in sent_ids:
                     all_new.append(d)
                     print(f"  [新] {d['id']} | {d['text'][:40]}...")
 
@@ -440,6 +467,7 @@ def main():
 
     # 保存状态
     save_sent_ids(sent_ids)
+    save_last_check_time(current_time)
     print(f"\n[完成] 已保存发送记录，当前共 {len(sent_ids)} 条")
 
 
