@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-B站UP主动态监控脚本 - RSSHub版本
-使用RSSHub服务获取B站动态，避免反爬虫问题
+B站UP主动态监控脚本 - 多方案版本
+尝试多种方式获取B站动态
 """
 
 import requests
@@ -11,22 +11,22 @@ import time
 import hashlib
 from datetime import datetime
 import sys
-import feedparser
 
-# RSSHub服务地址（多个公共实例备选）
-RSSHUB_INSTANCES = [
-    "https://rsshub.app",
-    "https://rsshub.rssforever.com",
-    "https://rsshub.ktachibana.party",
-    "https://rsshub.ktachibana.party",
-]
-# B站用户动态RSS格式
-RSS_URL_TEMPLATE = "/bilibili/user/dynamic/{uid}"
+# 尝试多个数据源
+# 方案1: B站移动端API
+MOBILE_API = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
+# 方案2: B站动态页面
+DYNAMIC_URL = "https://space.bilibili.com/{uid}/dynamic"
+# 方案3: RSSHub
+RSSHUB_URL = "https://rsshub.app/bilibili/user/dynamic/{uid}"
 
 # 请求头
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': 'application/rss+xml, application/xml, text/xml',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Origin': 'https://space.bilibili.com',
+    'Referer': 'https://space.bilibili.com/',
 }
 
 
